@@ -12,12 +12,8 @@ cc_binary {
         "internal/ByteArrayConverter.cpp",
     ],
     // This hex value is fetched from /vendor/etc/hal_uuid_map.xml
-    cflags: select(soong_config_variable("omapi", "km_vendor"), {
-        "nxp": ["-DUUID_HEXSTRING=\"636F6D2E6E78702E7365637572697479\""],
-        "stm": ["-DUUID_HEXSTRING=\"534552454144595f48414c5f55554944\""],
-        default: [],
-    }) + select(soong_config_variable("omapi", "custom_uuid"), {
-        any @ uuid: ["-DCUSTOM_UUID_HEXSTRING=" + uuid],
+    cflags: select(soong_config_variable("omapi", "uuid"), {
+        any @ uuid: ["-DCUSTOM_UUID_HEXSTRING=\"" + uuid + "\""],
         default: [],
     }),
     local_include_dirs: ["include"],

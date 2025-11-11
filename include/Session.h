@@ -12,7 +12,6 @@ using aidl::android::se::omapi::ISecureElementChannel;
 using aidl::android::se::omapi::ISecureElementListener;
 using aidl::android::se::omapi::ISecureElementReader;
 
-
 namespace aidl::android::se {
 class Channel;
 class SecureElementChannel;
@@ -47,10 +46,14 @@ class SecureElementSession : public BnSecureElementSession {
         std::mutex mLock;
         bool mIsClosed;
         std::vector<uint8_t> mAtr;
-#ifndef CUSTOM_UUID_HEXSTRING
-        const std::vector<uint8_t> mUuid = hexStringToBytes(UUID_HEXSTRING);
-#else
-        const std::vector<uint8_t> mUuid = hexStringToBytes(CUSTOM_UUID_HEXSTRING);
+        std::vector<uint8_t> mUuid;
+
+        std::vector<std::string> UUIDs = {
+            "636F6D2E6E78702E7365637572697479", // NXP
+            "534552454144595f48414c5f55554944", // STM
+#ifdef CUSTOM_UUID_HEXSTRING
+            CUSTOM_UUID_HEXSTRING,
 #endif
+        };
 };
 }  // namespace aidl::android::se::omapi

@@ -64,29 +64,49 @@ SecureElementSession::SecureElementSession(SecureElementReader* reader) {
     const std::shared_ptr<ISecureElementListener>& listener, std::shared_ptr<ISecureElementChannel>* outChannel) {
         LOG(INFO) << __func__ << " AID = " << p2;
         if(mIsClosed) {
-            LOG(ERROR) << "Session is closed";
-        } else if (listener == nullptr) {
-            LOG(ERROR) << "Listener must not be null";
+            LOG(ERROR) << __func__ << ": Session is closed!";
+            *outChannel = nullptr;
+            return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(EX_SERVICE_SPECIFIC,
+                                                                            "Session is closed");
+        } else if(listener == nullptr) {
+            LOG(ERROR) << __func__ << ": listener is null!";
+            *outChannel = nullptr;
+            return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(EX_SERVICE_SPECIFIC,
+                                                                            "Listener is null");
         } else if ((p2 != 0x00) && (p2 != 0x04) && (p2 != 0x08) && (p2 != 0x0C)) {
-            LOG(ERROR) << "p2 not supported: " << (p2 & 0xFF);
+            LOG(ERROR) << __func__ << ": Unsupported p2 operation: " << (p2 & 0xFF);
+            *outChannel = nullptr;
+            return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(EX_SERVICE_SPECIFIC,
+                                                                            "Unsupported p2 operation");
         }
-        std::string packageName;
+        std::string packageName = "";
         // const std::vector<uint8_t>& uuid
         /* Ignore getting package name */
-        LOG(INFO) << "openBasicChannel() trying to find mapping uuid";
+        // LOG(INFO) << "openBasicChannel() trying to find mapping uuid";
         /* hardcode uuid, refer to /vendor/etc/hal_uuid_map.xml */
 
         /* Skip judging of equal of mReader and ESE_TERMINAL */
         // int uid = AIBinder_getCallingUid();
         Terminal& terminal = mReader->getTerminal();
-        std::shared_ptr<Channel> channel = terminal.openBasicChannel(this, aid, p2, listener,
-                                                                    "" /* package name */, mUuid, AIBinder_getCallingPid());
+        std::shared_ptr<Channel> channel = nullptr;
+
+        for (std::string &uuid : UUIDs) {
+            mUuid = hexStringToBytes(uuid);
+            LOG(INFO) << __func__ << ": Trying to open basic channel with uuid: " << uuid;
+            channel = terminal.openBasicChannel(this, aid, p2, listener,
+                                                packageName, mUuid,
+                                                AIBinder_getCallingPid());
+            if (channel != nullptr) {
+                LOG(INFO) << __func__ << ": Open basic channel success. Channel: " << channel->getChannelNumber();
+                break;
+            }
+        }
+
         if (channel == nullptr) {
-            LOG(ERROR) << "OpenBasicChannel() - returning null";
-            // Consider returning an error status if channel is nullptr
-            // For now, proceeding as original logic might imply *outChannel could be null.
-            *outChannel = nullptr; // Explicitly set outChannel to null
-            return ::ndk::ScopedAStatus::ok(); // Or an error status
+            LOG(ERROR) << __func__ << ": returning null";
+            LOG(ERROR) << __func__ << ": Please check /(vendor|odm)/etc/hal_uuid_map_config.xml for correct uuid!";
+            return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(
+                    -1, "Failed to openBasicChannel");
         }
         LOG(INFO) << "Open basic channel success. Channel: " << channel->getChannelNumber();
         
@@ -104,15 +124,18 @@ SecureElementSession::SecureElementSession(SecureElementReader* reader) {
         if(mIsClosed) {
             LOG(ERROR) << __func__ << ": Session is closed!";
             *outChannel = nullptr;
-            return ::ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE); // Example error
+            return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(EX_SERVICE_SPECIFIC,
+                                                                            "Session is closed");
         } else if(listener == nullptr) {
-            LOG(ERROR) << __func__ << ": listener is null!";
+            LOG(ERROR) << __func__ << ": Listener is null!";
             *outChannel = nullptr;
-            return ::ndk::ScopedAStatus::fromExceptionCode(EX_NULL_POINTER); // Example error
+            return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(EX_SERVICE_SPECIFIC,
+                                                                            "Listener is null");
         } else if ((p2 != 0x00) && (p2 != 0x04) && (p2 != 0x08) && (p2 != 0x0C)) {
             LOG(ERROR) << __func__ << ": Unsupported p2 operation: " << (p2 & 0xFF);
             *outChannel = nullptr;
-            return ::ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT); // Example error
+            return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(EX_SERVICE_SPECIFIC,
+                                                                            "Unsupported p2 operation");
         }
         std::string packageName = ""; /* getPackageNameFromCallingUid, empty on native env */
 
@@ -121,11 +144,23 @@ SecureElementSession::SecureElementSession(SecureElementReader* reader) {
         // }
 
         Terminal& terminal = mReader->getTerminal();
-        std::shared_ptr<Channel> channel = terminal.openLogicalChannel(this, aid, p2, listener, packageName, mUuid, AIBinder_getCallingPid());
+        std::shared_ptr<Channel> channel = nullptr;
 
-        if(channel == nullptr) {
-            LOG(ERROR) << __func__ << ": openLogicalChannel() - returning null";
-            *outChannel = nullptr; // Ensure outChannel is null if channel is null
+        for (std::string &uuid : UUIDs) {
+            mUuid = hexStringToBytes(uuid);
+            LOG(INFO) << __func__ << ": Trying to open logic channel with uuid: " << uuid;
+            channel = terminal.openLogicalChannel(this, aid, p2, listener,
+                                                packageName, mUuid,
+                                                AIBinder_getCallingPid());
+            if (channel != nullptr) {
+                LOG(INFO) << __func__ << ": Open logic channel success. Channel: " << channel->getChannelNumber();
+                break;
+            }
+        }
+        
+        if (channel == nullptr) {
+            LOG(ERROR) << __func__ << ": returning null";
+            LOG(ERROR) << __func__ << ": Please check /(vendor|odm)/etc/hal_uuid_map_config.xml for correct uuid!";
             return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(
                     -1, "Failed to openLogicalChannel");
         }
