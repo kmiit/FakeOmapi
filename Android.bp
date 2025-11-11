@@ -1,7 +1,5 @@
 cc_binary {
-    name: "android.se.omapi.fake",
-
-    relative_install_path: "hw",
+    name: "se_omapi",
     srcs: [
         "main.cpp",
         "Channel.cpp",
@@ -24,9 +22,5 @@ cc_binary {
         "android.hardware.secure_element-V1-ndk",
         "android.se.omapi-V1-ndk",
     ],
-    vendor: true,
-    // recovery: true,
-
-    init_rc: ["android.se.omapi.rc"],
-    vintf_fragments: ["android.se.omapi.xml"],
+    recovery_available: true,
 }
