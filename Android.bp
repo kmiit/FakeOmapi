@@ -1,3 +1,22 @@
+soong_config_module_type {
+    name: "omapi_uuid_cflag_default",
+    module_type: "cc_defaults",
+    config_namespace: "omapi",
+    value_variables: ["uuid"],
+    properties: [
+        "cppflags",
+    ],
+}
+
+omapi_uuid_cflag_default {
+    name: "omapi_uuid_cflag_default",
+    soong_config_variables: {
+        uuid: {
+            cppflags: ["-DCUSTOM_UUID_HEXSTRING=\"%s\""],
+        },
+    },
+}
+
 cc_binary {
     name: "se_omapi",
     srcs: [
@@ -10,10 +29,15 @@ cc_binary {
         "internal/ByteArrayConverter.cpp",
     ],
     // This hex value is fetched from /vendor/etc/hal_uuid_map.xml
-    cflags: select(soong_config_variable("omapi", "uuid"), {
-        any @ uuid: ["-DCUSTOM_UUID_HEXSTRING=\"" + uuid + "\""],
-        default: [],
-    }),
+    // For A16+
+    // cflags: select(soong_config_variable("omapi", "uuid"), {
+    //     any @ uuid: ["-DCUSTOM_UUID_HEXSTRING=\"" + uuid + "\""],
+    //     default: [],
+    // }),
+
+    // Adapt for A14
+    defaults: ["omapi_uuid_cflag_default"],
+
     local_include_dirs: ["include"],
     shared_libs: [
         "libbase",
