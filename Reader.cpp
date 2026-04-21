@@ -5,9 +5,10 @@
 
 namespace aidl::android::se {
 using aidl::android::se::omapi::SecureElementSession;
-    SecureElementReader::SecureElementReader(std::shared_ptr<SecureElementService> service, Terminal* terminal)
+    SecureElementReader::SecureElementReader(std::shared_ptr<SecureElementService> service,
+                                             ::android::sp<Terminal> terminal)
         : mService(service),
-        mTerminal(terminal){};
+          mTerminal(terminal) {}
 
     std::vector<uint8_t> SecureElementReader::getAtr() {
         LOG(INFO) << __PRETTY_FUNCTION__;
@@ -22,11 +23,20 @@ using aidl::android::se::omapi::SecureElementSession;
 
     ::ndk::ScopedAStatus SecureElementReader::closeSessions() {
         LOG(INFO) << __PRETTY_FUNCTION__;
-        std::lock_guard<std::mutex> lock(mLock);
-        for (auto& cSession : mSessions) {
-                cSession->close();
+        // Snapshot + unlock before calling Session::close(): close() re-enters
+        // removeSession() which also takes mLock, so holding it here would
+        // self-deadlock on a non-recursive std::mutex.
+        std::vector<std::shared_ptr<SecureElementSession>> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(mLock);
+            snapshot = std::move(mSessions);
+            mSessions.clear();
         }
-        mSessions.clear();
+        for (auto& cSession : snapshot) {
+            if (cSession) {
+                cSession->close();
+            }
+        }
         return ::ndk::ScopedAStatus::ok();
     }
 
@@ -37,7 +47,6 @@ using aidl::android::se::omapi::SecureElementSession;
             return;
         }
         std::lock_guard<std::mutex> lock(mLock);
-        // mSessions.erase(std::remove(mSessions.begin(), mSessions.end(), session), mSessions.end());
         mSessions.erase(
             std::remove_if(
                 mSessions.begin(),
@@ -48,7 +57,7 @@ using aidl::android::se::omapi::SecureElementSession;
             ),
             mSessions.end()
         );
-        if (mSessions.size() == 0) {
+        if (mSessions.empty()) {
             mTerminal->mDefaultApplicationSelectedOnBasicChannel = true;
         }
     }
@@ -57,17 +66,19 @@ using aidl::android::se::omapi::SecureElementSession;
         LOG(INFO) << __PRETTY_FUNCTION__;
         if (!mTerminal->isSecureElementPresent()) {
             LOG(ERROR) << "Secure Element is not present";
+            return ::ndk::ScopedAStatus::fromExceptionCodeWithMessage(
+                    EX_ILLEGAL_STATE, "Secure Element is not present");
         }
         std::lock_guard<std::mutex> lock(mLock);
-        auto nSession = ndk::SharedRefBase::make<SecureElementSession>(this);
+        auto nSession = ndk::SharedRefBase::make<SecureElementSession>(this->ref<SecureElementReader>());
         mSessions.push_back(nSession);
         *session = std::static_pointer_cast<ISecureElementSession>(nSession);
         return ::ndk::ScopedAStatus::ok();
     }
 
-    Terminal& SecureElementReader::getTerminal() {
+    ::android::sp<Terminal> SecureElementReader::getTerminal() {
         LOG(INFO) << __PRETTY_FUNCTION__;
-        return *mTerminal;
+        return mTerminal;
     }
 
     ::ndk::ScopedAStatus SecureElementReader::reset(bool* isReset) {

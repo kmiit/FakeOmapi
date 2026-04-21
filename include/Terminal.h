@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <vector>
 #include <map>
 #include <mutex>
@@ -18,7 +19,6 @@
 
 #include <string>
 #include <iostream>
-// #include "AccessControl/AccessControlEnforcer.h"
 
 using aidl::android::hardware::secure_element::ISecureElement;
 using aidl::android::hardware::secure_element::BnSecureElementCallback;
@@ -34,13 +34,12 @@ class Channel;
 class SecureElementReader;
 
 using aidl::android::se::Channel;
-// using aidl::android::se::SecureElementReader;
 using aidl::android::se::omapi::SecureElementService;
 
 class Terminal : public ::android::RefBase {
 public:
     Terminal(const std::string name);
-    // virtual ~Terminal() = default;
+    ~Terminal() override;
 
     void initialize(bool retryOnFail);
     void closeChannel(Channel* channel);
@@ -48,51 +47,36 @@ public:
     void close();
     std::string getName() const;
     std::vector<uint8_t> getAtr();
-    void selectDefaultApplication();
-    std::shared_ptr<Channel> openBasicChannel(ISecureElementSession* session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener, const std::string& packageName, const std::vector<uint8_t>& uuid, int pid);
-    std::shared_ptr<Channel> openLogicalChannel(ISecureElementSession* session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener, const std::string& packageName, const std::vector<uint8_t>& uuid, int pid);
-    bool isAidSelectable(const std::vector<uint8_t>& aid);
+    std::shared_ptr<Channel> openBasicChannel(ISecureElementSession* session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener);
+    std::shared_ptr<Channel> openLogicalChannel(ISecureElementSession* session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener);
     std::vector<uint8_t> transmit(const std::vector<uint8_t>& cmd);
     bool isSecureElementPresent();
     bool reset();
-    void dump(std::ostream& writer);
     std::shared_ptr<ISecureElementReader> newSecureElementReader(std::shared_ptr<SecureElementService> service);
-
-    std::string getName();
 
 private:
     void stateChange(bool state, const std::string& reason);
-    void sendStateChangedBroadcast(bool state);
-    void initializeAccessControl();
-    // ChannelAccess setUpChannelAccess(const std::vector<uint8_t>& aid, const std::string& packageName, const std::vector<uint8_t>& uuid, int pid, bool isBasicChannel);
-    bool isPrivilegedApplication(const std::string& packageName);
-    void onClientDeath(void* cookie);
+    void onClientDeath();
     static void onClientDeathWrapper(void* cookie);
 
     std::string mName;
-    std::string mTag;
     std::map<int, std::shared_ptr<Channel>> mChannels;
     std::mutex mLock;
-    bool mIsConnected;
-    int mGetHalRetryCount = 0;
-    // AccessControlEnforcer* mAccessControlEnforcer;
+    std::atomic<bool> mIsConnected{false};
+    std::atomic<int> mGetHalRetryCount{0};
     std::shared_ptr<ISecureElement> mAidlHal;
 
     class AidlCallback : public BnSecureElementCallback {
         public:
             AidlCallback(Terminal* terminal);
-            // Override from ISecureElementCallback
             ::ndk::ScopedAStatus onStateChange(bool state, const std::string& debugReason) override;
-            // ::ndk::ScopedAStatus getInterfaceVersion(int& version);
-            // ::ndk::ScopedAStatus getInterfaceHash(std::string& hash);
+            void clearTerminal();
         private:
-            Terminal* mTerminal;
+            std::atomic<Terminal*> mTerminal;
         };
 
     bool mDefaultApplicationSelectedOnBasicChannel = true;
-    
-    const std::string SECURE_ELEMENT_PRIVILEGED_OPERATION_PERMISSION =
-        "android.permission.SECURE_ELEMENT_PRIVILEGED_OPERATION";
+
     const bool DEBUG = true;
 
     const int GET_SERVICE_DELAY_MILLIS = 4 * 1000;
@@ -101,7 +85,6 @@ private:
 
     AIBinder_DeathRecipient* mDeathRecipient;
     std::shared_ptr<AidlCallback> mAidlCallback;
-    static void onBinderDiedCallback(void* cookie);
 
     void handler(int event, int msg, int delay);
     
