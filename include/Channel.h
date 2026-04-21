@@ -1,22 +1,25 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 
 #include <aidl/android/se/omapi/BnSecureElementChannel.h>
 #include <aidl/android/se/omapi/ISecureElementListener.h>
-#include <aidl/android/se/omapi/ISecureElementSession.h>
 
 #include "Terminal.h"
 
 using aidl::android::se::omapi::BnSecureElementChannel;
 using aidl::android::se::omapi::ISecureElementListener;
-using aidl::android::se::omapi::ISecureElementSession;
+
+namespace aidl::android::se::omapi {
+class SecureElementSession;
+}
 
 namespace aidl::android::se {
 
 class Channel {
     public:
-        Channel(ISecureElementSession* session,
+        Channel(std::weak_ptr<omapi::SecureElementSession> session,
             Terminal* terminal,
             int channelNumber,
             const std::vector<uint8_t>& selectResponse,
@@ -33,7 +36,7 @@ class Channel {
         bool isClosed();
         bool selectNext();
     private:
-        ISecureElementSession* mSession;
+        std::weak_ptr<omapi::SecureElementSession> mSession;
         Terminal* mTerminal;
         int mChannelNumber;
         std::vector<uint8_t> mSelectResponse;

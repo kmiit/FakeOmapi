@@ -53,7 +53,11 @@ namespace aidl::android::se::omapi {
     void SecureElementService::createTerminals() {
         const std::string name = std::string(ESE_TERMINAL) + "1";
         ::android::sp<Terminal> terminal = new Terminal(name);
-        terminal->initialize(true);
         mTerminals.insert({name, terminal});
+        // Match upstream Java SecureElementService.onCreate(): block in the
+        // service-creation path until the SE HAL is connected. Otherwise the
+        // first openSession() race after addService() returns
+        // EX_ILLEGAL_STATE before the HAL has even bound.
+        terminal->initialize(true);
     }
 }

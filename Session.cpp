@@ -90,8 +90,8 @@ SecureElementSession::~SecureElementSession() = default;
     }
     if (listener == nullptr) {
         *outChannel = nullptr;
-        return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(EX_SERVICE_SPECIFIC,
-                                                                        "Listener is null");
+        return ::ndk::ScopedAStatus::fromExceptionCodeWithMessage(
+                EX_NULL_POINTER, "Listener is null");
     }
     if ((p2 != 0x00) && (p2 != 0x04) && (p2 != 0x08) && (p2 != 0x0C)) {
         LOG(ERROR) << __func__ << ": Unsupported p2: " << int(p2 & 0xFF);
@@ -106,7 +106,7 @@ SecureElementSession::~SecureElementSession() = default;
     }
 
     std::shared_ptr<Channel> channel =
-        reader->getTerminal()->openBasicChannel(this, aid, p2, listener);
+        reader->getTerminal()->openBasicChannel(this->ref<SecureElementSession>(), aid, p2, listener);
     if (channel == nullptr) {
         return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(
                 -1, "Failed to openBasicChannel");
@@ -128,8 +128,8 @@ SecureElementSession::~SecureElementSession() = default;
     }
     if (listener == nullptr) {
         *outChannel = nullptr;
-        return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(EX_SERVICE_SPECIFIC,
-                                                                        "Listener is null");
+        return ::ndk::ScopedAStatus::fromExceptionCodeWithMessage(
+                EX_NULL_POINTER, "Listener is null");
     }
     if ((p2 != 0x00) && (p2 != 0x04) && (p2 != 0x08) && (p2 != 0x0C)) {
         LOG(ERROR) << __func__ << ": Unsupported p2: " << int(p2 & 0xFF);
@@ -144,7 +144,7 @@ SecureElementSession::~SecureElementSession() = default;
     }
 
     std::shared_ptr<Channel> channel =
-        reader->getTerminal()->openLogicalChannel(this, aid, p2, listener);
+        reader->getTerminal()->openLogicalChannel(this->ref<SecureElementSession>(), aid, p2, listener);
     if (channel == nullptr) {
         return ::ndk::ScopedAStatus::fromServiceSpecificErrorWithMessage(
                 -1, "Failed to openLogicalChannel");

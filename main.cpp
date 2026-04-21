@@ -21,7 +21,11 @@ int main() {
     std::signal(SIGTERM, handleTerminationSignal);
     std::signal(SIGINT, handleTerminationSignal);
 
-    ABinderProcess_setThreadPoolMaxThreadCount(0);
+    // One extra worker thread lets death-recipient / onStateChange callbacks
+    // be dispatched while the main thread is busy with a client transaction.
+    ABinderProcess_setThreadPoolMaxThreadCount(1);
+    ABinderProcess_startThreadPool();
+
     std::shared_ptr<SecureElementService> hal = ndk::SharedRefBase::make<SecureElementService>();
 
     const std::string instance = std::string(SecureElementService::descriptor) + "/default";

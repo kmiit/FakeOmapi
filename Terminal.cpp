@@ -17,8 +17,14 @@ using aidl::android::se::omapi::SecureElementSession;
 
 void Terminal::onClientDeath() {
     LOG(INFO) << __func__ << ": Die";
-    mIsConnected = false;
-    this->handler(EVENT_GET_HAL, 0, GET_SERVICE_DELAY_MILLIS);
+    {
+        std::lock_guard<std::mutex> lock(mLock);
+        mIsConnected = false;
+        // Drop the dead binder proxy so the next initialize() will
+        // waitForService() again and build a fresh one.
+        mAidlHal.reset();
+    }
+    this->scheduleReinitialize(GET_SERVICE_DELAY_MILLIS);
 }
 
 void Terminal::onClientDeathWrapper(void* cookie) {
@@ -26,6 +32,11 @@ void Terminal::onClientDeathWrapper(void* cookie) {
     Terminal* self = static_cast<Terminal*>(cookie);
     self->onClientDeath();
 }
+
+// Required by NDK to avoid a runtime warning. Cookie is a raw Terminal*
+// passed as `this` to AIBinder_linkToDeath(); the Terminal object is kept
+// alive by external sp<Terminal> holders, so there is nothing to free here.
+static void onDeathRecipientUnlinked(void* /*cookie*/) {}
 
 Terminal::AidlCallback::AidlCallback(Terminal* terminal) {
     mTerminal = terminal;
@@ -48,6 +59,7 @@ void Terminal::AidlCallback::clearTerminal() {
 Terminal::Terminal(const std::string name) {
     mName = name;
     mDeathRecipient = AIBinder_DeathRecipient_new(onClientDeathWrapper);
+    AIBinder_DeathRecipient_setOnUnlinked(mDeathRecipient, onDeathRecipientUnlinked);
     mAidlCallback = ndk::SharedRefBase::make<AidlCallback>(this);
 }
 
@@ -78,10 +90,13 @@ void Terminal::stateChange(bool state, const std::string& reason) {
         LOG(INFO) << "state: not connected";
     } else {
         LOG(INFO) << "state: connected";
+        // On (re)connect, purge stale local channel entries — they are
+        // no longer valid on the HAL side. Matches original Terminal.java.
         this->closeChannels();
         mDefaultApplicationSelectedOnBasicChannel = true;
     }
-    this->handler(EVENT_NOTIFY_STATE_CHANGE, state, 0);
+    // No state-change broadcast in recovery; the original APK's
+    // sendStateChangedBroadcast path is intentionally dropped.
 }
 
 std::vector<uint8_t> Terminal::transmit(const std::vector<uint8_t>& cmd) {
@@ -147,24 +162,42 @@ std::vector<uint8_t> Terminal::transmit(const std::vector<uint8_t>& cmd) {
     }
 }
 
-void Terminal::initialize(bool retryOnFail) {
+void Terminal::initialize(bool /*retryOnFail*/) {
     LOG(INFO) << __func__;
-    std::lock_guard<std::mutex> lock(mLock);
-    if (mAidlHal == nullptr) {
-        const std::string bName = std::string(ISecureElement::descriptor) + "/" + getName();
-        LOG(INFO) << __func__ << ": Getting Secure Element service: " << bName;
-        AIBinder* binder = AServiceManager_waitForService(bName.c_str());
-        mAidlHal = ISecureElement::fromBinder(ndk::SpAIBinder(binder));
+
+    // Fast path: if already connected, nothing to do. mLock is held briefly
+    // only to read mAidlHal safely.
+    {
+        std::lock_guard<std::mutex> lock(mLock);
         if (mAidlHal != nullptr) {
-            LOG(INFO) << __func__ << ": Successfully get SE service: " << bName;
-            mAidlHal->init(mAidlCallback);
-            AIBinder_linkToDeath(mAidlHal->asBinder().get(),
-                                mDeathRecipient, this);
-            mIsConnected = true;
-        } else {
-            LOG(ERROR) << __func__ << ": Failed to get SE service: " << bName;
+            return;
         }
     }
+
+    // waitForService() can block for a long time; do it WITHOUT mLock so
+    // that transmit/openChannel calls are not serialized behind HAL startup.
+    const std::string bName = std::string(ISecureElement::descriptor) + "/" + getName();
+    LOG(INFO) << __func__ << ": Getting Secure Element service: " << bName;
+    AIBinder* binder = AServiceManager_waitForService(bName.c_str());
+    std::shared_ptr<ISecureElement> hal = ISecureElement::fromBinder(ndk::SpAIBinder(binder));
+    if (hal == nullptr) {
+        LOG(ERROR) << __func__ << ": Failed to get SE service: " << bName;
+        return;
+    }
+
+    // Publish the fresh proxy under mLock; bail if someone else beat us.
+    {
+        std::lock_guard<std::mutex> lock(mLock);
+        if (mAidlHal != nullptr) {
+            return;
+        }
+        mAidlHal = hal;
+    }
+
+    LOG(INFO) << __func__ << ": Successfully get SE service: " << bName;
+    hal->init(mAidlCallback);
+    AIBinder_linkToDeath(hal->asBinder().get(), mDeathRecipient, this);
+    mIsConnected = true;
 }
 
 std::shared_ptr<ISecureElementReader> Terminal::newSecureElementReader(std::shared_ptr<omapi::SecureElementService> service) {
@@ -172,7 +205,7 @@ std::shared_ptr<ISecureElementReader> Terminal::newSecureElementReader(std::shar
     return ndk::SharedRefBase::make<SecureElementReader>(service, ::android::sp<Terminal>(this));
 }
 
-std::shared_ptr<Channel> Terminal::openBasicChannel(ISecureElementSession* session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener) {
+std::shared_ptr<Channel> Terminal::openBasicChannel(std::weak_ptr<omapi::SecureElementSession> session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener) {
     LOG(INFO) << __func__;
     if (!aid.empty() && (aid.size() < 5 || aid.size() > 16)) {
         LOG(ERROR) << __func__ << ": AID out of range";
@@ -203,13 +236,13 @@ std::shared_ptr<Channel> Terminal::openBasicChannel(ISecureElementSession* sessi
     }
 
     LOG(INFO) << __func__ << ": basic channel opened, select response: " << hex2string(selectResponse);
-    auto basicChannel = std::make_shared<Channel>(session, this, 0, selectResponse, aid, listener);
+    auto basicChannel = std::make_shared<Channel>(std::move(session), this, 0, selectResponse, aid, listener);
     mChannels.insert(std::make_pair(0, basicChannel));
     mDefaultApplicationSelectedOnBasicChannel = false;
     return basicChannel;
 }
 
-std::shared_ptr<Channel> Terminal::openLogicalChannel(ISecureElementSession* session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener) {
+std::shared_ptr<Channel> Terminal::openLogicalChannel(std::weak_ptr<omapi::SecureElementSession> session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener) {
     LOG(INFO) << __func__;
     if (!aid.empty() && (aid.size() < 5 || aid.size() > 16)) {
         LOG(ERROR) << __func__ << ": AID out of range";
@@ -238,7 +271,7 @@ std::shared_ptr<Channel> Terminal::openLogicalChannel(ISecureElementSession* ses
     LOG(INFO) << __func__ << ": channel " << channelNumber
               << ", select response: " << hex2string(selectResponse);
 
-    auto logicalChannel = std::make_shared<Channel>(session, this, channelNumber, selectResponse, aid, listener);
+    auto logicalChannel = std::make_shared<Channel>(std::move(session), this, channelNumber, selectResponse, aid, listener);
     mChannels.insert(std::make_pair(channelNumber, logicalChannel));
     return logicalChannel;
 }
@@ -246,6 +279,9 @@ std::shared_ptr<Channel> Terminal::openLogicalChannel(ISecureElementSession* ses
 
 bool Terminal::reset() {
     LOG(INFO) << __func__;
+    // TWRP recovery: SE reader.reset() is unsupported. The ISecureElement HAL
+    // exposes no reset entry point, and recovery has no privileged caller path
+    // that would legitimately request one.
     return true;
 }
 
@@ -256,6 +292,10 @@ void Terminal::closeChannel(Channel* channel) {
         LOG(WARNING) << __func__  << ": Attempt to close a null channel.";
         return;
     }
+
+    // Serialize HAL closeChannel and mChannels mutation against
+    // transmit/openBasicChannel/openLogicalChannel, which all hold mLock.
+    std::lock_guard<std::mutex> lock(mLock);
 
     if (mIsConnected) {
         if (mAidlHal != nullptr) {
@@ -325,47 +365,42 @@ void Terminal::closeChannels() {
     }
 }
 
-void Terminal::close() {
-    LOG(INFO) << __func__;
-    if (mAidlHal != nullptr) {
-        LOG(INFO) << __func__ << ": Unlinking death recipient.";
-        AIBinder* binder = mAidlHal->asBinder().get();
-        if (binder) {
-            AIBinder_unlinkToDeath(binder, mDeathRecipient, this);
-        }
-    }
-}
-
 bool Terminal::isSecureElementPresent() {
     LOG(INFO) << __func__;
-    bool p;
-    if (mAidlHal != nullptr) {
-        mAidlHal->isCardPresent(&p);
-        LOG(INFO) << __func__ << ": " << p;
-        return p;
+    std::shared_ptr<ISecureElement> hal;
+    {
+        std::lock_guard<std::mutex> lock(mLock);
+        hal = mAidlHal;
     }
-    LOG(ERROR) << __func__ << ": Can't find mAidlHal!, please init it first.";
-    return false;
+    if (hal == nullptr) {
+        LOG(ERROR) << __func__ << ": mAidlHal not ready";
+        return false;
+    }
+    bool p = false;
+    hal->isCardPresent(&p);
+    LOG(INFO) << __func__ << ": " << p;
+    return p;
 }
 
 std::vector<uint8_t> Terminal::getAtr() {
     LOG(INFO) << __func__;
     std::vector<uint8_t> atr;
-
-    if (!mIsConnected) {
+    if (!mIsConnected.load()) {
         LOG(ERROR) << "Not connected";
         return atr;
     }
-
-    if (mAidlHal != nullptr) {
-        LOG(INFO) << "Fetching atr from AIDL hal";
-        mAidlHal->getAtr(&atr);
-        if (atr.empty()) {
-            LOG(ERROR) << "Atr is empty!";
-            return atr;
-        }
-    } else {
+    std::shared_ptr<ISecureElement> hal;
+    {
+        std::lock_guard<std::mutex> lock(mLock);
+        hal = mAidlHal;
+    }
+    if (hal == nullptr) {
         LOG(ERROR) << "No AIDL hal found!";
+        return atr;
+    }
+    hal->getAtr(&atr);
+    if (atr.empty()) {
+        LOG(ERROR) << "Atr is empty!";
         return atr;
     }
     if (DEBUG) {
@@ -374,10 +409,7 @@ std::vector<uint8_t> Terminal::getAtr() {
     return atr;
 }
 
-void Terminal::handler(int event, int /*msg*/, int delay) {
-    if (event != EVENT_GET_HAL) {
-        return;
-    }
+void Terminal::scheduleReinitialize(int delayMs) {
     constexpr int kMaxRetry = 5;
     if (mGetHalRetryCount.load() >= kMaxRetry) {
         LOG(ERROR) << __func__ << ": giving up HAL reconnect after "
@@ -385,12 +417,12 @@ void Terminal::handler(int event, int /*msg*/, int delay) {
         return;
     }
 
-    // Offload to a detached thread so binder death-recipient/state-change callbacks
-    // are not blocked by waitForService and sleep_for.
+    // Offload to a detached thread so the binder death-recipient callback
+    // thread is not blocked by waitForService and the retry sleep.
     ::android::sp<Terminal> self(this);
-    std::thread([self, delay]() {
-        if (delay > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+    std::thread([self, delayMs]() {
+        if (delayMs > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
         }
         self->mGetHalRetryCount.fetch_add(1);
         self->initialize(self->mName.starts_with(SecureElementService::ESE_TERMINAL));

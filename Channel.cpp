@@ -3,13 +3,13 @@
 
 namespace aidl::android::se {
 
-Channel::Channel(ISecureElementSession* session,
+Channel::Channel(std::weak_ptr<omapi::SecureElementSession> session,
             Terminal* terminal,
             int channelNumber,
             const std::vector<uint8_t>& selectResponse,
             const std::vector<uint8_t>& aid,
             const std::shared_ptr<ISecureElementListener>& listener)
-    : mSession(session),
+    : mSession(std::move(session)),
       mTerminal(terminal),
       mChannelNumber(channelNumber),
       mSelectResponse(selectResponse),
@@ -29,10 +29,8 @@ void Channel::close() {
     if (mTerminal) {
         mTerminal->closeChannel(this);
     }
-    if (mSession != nullptr) {
-        auto* concreteSession =
-            static_cast<aidl::android::se::omapi::SecureElementSession*>(mSession);
-        concreteSession->removeChannel(this);
+    if (auto session = mSession.lock()) {
+        session->removeChannel(this);
     }
 }
 
@@ -123,14 +121,19 @@ uint8_t Channel::internalGetModifiedCla(uint8_t originalCla, int channelNumber) 
 }
 
 bool Channel::selectNext() {
-    // LOG(INFO) << "Channel::selectNext() on channel " << mChannelNumber;
-
     if (isClosed()) {
         LOG(ERROR) << "selectNext: Channel " << mChannelNumber << " is closed.";
+        return false;
     }
 
     if (mAid.empty()) {
         LOG(ERROR) << "selectNext: No AID provided for channel " << mChannelNumber;
+        return false;
+    }
+
+    if (!mTerminal) {
+        LOG(ERROR) << "selectNext: Terminal is null for channel " << mChannelNumber;
+        return false;
     }
 
     std::vector<uint8_t> selectCommand(5 + mAid.size());
@@ -141,41 +144,34 @@ bool Channel::selectNext() {
     selectCommand[4] = static_cast<uint8_t>(mAid.size()); // Lc
     std::copy(mAid.begin(), mAid.end(), selectCommand.begin() + 5);
 
-    // Set channel number bits in CLA
-    if (mChannelNumber != 0) { // Basic channel usually doesn't need CLA modification from client
+    if (mChannelNumber != 0) {
         selectCommand[0] = internalGetModifiedCla(selectCommand[0], mChannelNumber);
     }
 
-    // LOG(INFO) << "selectNext: Transmitting SELECT NEXT command: " << hex2string(selectCommand);
-    if (!mTerminal) {
-        LOG(ERROR) << "selectNext: Terminal is null for channel " << mChannelNumber;
-    }
     std::vector<uint8_t> bufferSelectResponse = mTerminal->transmit(selectCommand);
 
-    if (bufferSelectResponse.size() < 2) { // Must have at least SW1 and SW2
-        LOG(ERROR) << "selectNext: Transmit failed or response too short (size: " << bufferSelectResponse.size() << ")";
+    if (bufferSelectResponse.size() < 2) {
+        LOG(ERROR) << "selectNext: Transmit failed or response too short (size: "
+                   << bufferSelectResponse.size() << ")";
+        return false;
     }
 
     uint8_t sw1 = bufferSelectResponse[bufferSelectResponse.size() - 2];
     uint8_t sw2 = bufferSelectResponse[bufferSelectResponse.size() - 1];
     uint16_t sw = (static_cast<uint16_t>(sw1) << 8) | sw2;
 
-    // LOG(INFO) << "selectNext: Response SW: " << std::hex << sw;
-
-    if (((sw & 0xF000) == 0x9000) || // 90xx
-        ((sw & 0xFF00) == 0x6200) || // 62xx (Warning, process completed)
-        ((sw & 0xFF00) == 0x6300)) { // 63xx (Warning, process completed, specific meaning)
-        mSelectResponse = bufferSelectResponse; // Update select response
-        // LOG(INFO) << "selectNext: Successfully selected next applet on channel " << mChannelNumber;
+    if (((sw & 0xF000) == 0x9000) ||
+        ((sw & 0xFF00) == 0x6200) ||
+        ((sw & 0xFF00) == 0x6300)) {
+        mSelectResponse = bufferSelectResponse;
         return true;
-    } else if ((sw & 0xFF00) == 0x6A00 && sw2 == 0x82) { // 6A82: File not found / Applet not found
-        // LOG(INFO) << "selectNext: No further applet found (6A82) on channel " << mChannelNumber;
-        return false;
-    } else {
-        LOG(ERROR) << "selectNext: Unsupported status word " << std::hex << sw << " on channel " << std::dec << mChannelNumber;
     }
-    LOG(ERROR) << "selectNext: Reached end of function unexpectedly for channel " << mChannelNumber << ". SW: " << std::hex << sw;
-    return false; 
+    if ((sw & 0xFF00) == 0x6A00 && sw2 == 0x82) {
+        return false;
+    }
+    LOG(ERROR) << "selectNext: Unsupported status word " << std::hex << sw
+               << " on channel " << std::dec << mChannelNumber;
+    return false;
 }
 
 SecureElementChannel::SecureElementChannel(const std::shared_ptr<Channel>& channel) {
@@ -211,6 +207,11 @@ ndk::ScopedAStatus SecureElementChannel::transmit(const std::vector<uint8_t>& co
     LOG(INFO) << __func__;
     outResponse->clear();
 
+    if (mChannel->isClosed()) {
+        return ndk::ScopedAStatus::fromExceptionCodeWithMessage(
+                EX_ILLEGAL_STATE, "Channel is closed");
+    }
+
     if (command.size() < 4) {
         return ndk::ScopedAStatus::fromExceptionCodeWithMessage(
                 EX_ILLEGAL_ARGUMENT, "APDU too short");
@@ -226,6 +227,13 @@ ndk::ScopedAStatus SecureElementChannel::transmit(const std::vector<uint8_t>& co
     if (cla == 0xFF && ((ins & 0xF0) == 0x60 || (ins & 0xF0) == 0x90)) {
         return ndk::ScopedAStatus::fromExceptionCodeWithMessage(
                 EX_SECURITY, "Reserved CLA/INS blocked");
+    }
+    // Block SELECT BY DF NAME on logical channels — applets must be (re)selected
+    // via openLogicalChannel/selectNext, not raw transmit. Matches upstream
+    // SecureElementChannel.transmit().
+    if (!mChannel->isBasicChannel() && ins == 0xA4 && command.size() >= 3 && command[2] == 0x04) {
+        return ndk::ScopedAStatus::fromExceptionCodeWithMessage(
+                EX_SECURITY, "SELECT by DF name blocked on logical channel");
     }
 
     std::vector<uint8_t> response = mChannel->transmit(command);

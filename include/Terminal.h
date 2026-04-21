@@ -29,6 +29,7 @@ using aidl::android::se::omapi::ISecureElementReader;
 namespace aidl::android::se {
 namespace omapi {
 class SecureElementService;
+class SecureElementSession;
 };
 class Channel;
 class SecureElementReader;
@@ -44,11 +45,10 @@ public:
     void initialize(bool retryOnFail);
     void closeChannel(Channel* channel);
     void closeChannels();
-    void close();
     std::string getName() const;
     std::vector<uint8_t> getAtr();
-    std::shared_ptr<Channel> openBasicChannel(ISecureElementSession* session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener);
-    std::shared_ptr<Channel> openLogicalChannel(ISecureElementSession* session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener);
+    std::shared_ptr<Channel> openBasicChannel(std::weak_ptr<omapi::SecureElementSession> session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener);
+    std::shared_ptr<Channel> openLogicalChannel(std::weak_ptr<omapi::SecureElementSession> session, const std::vector<uint8_t>& aid, uint8_t p2, const std::shared_ptr<ISecureElementListener>& listener);
     std::vector<uint8_t> transmit(const std::vector<uint8_t>& cmd);
     bool isSecureElementPresent();
     bool reset();
@@ -79,14 +79,12 @@ private:
 
     const bool DEBUG = true;
 
-    const int GET_SERVICE_DELAY_MILLIS = 4 * 1000;
-    const int EVENT_GET_HAL = 1;
-    const int EVENT_NOTIFY_STATE_CHANGE = 2;
+    static constexpr int GET_SERVICE_DELAY_MILLIS = 4 * 1000;
 
     AIBinder_DeathRecipient* mDeathRecipient;
     std::shared_ptr<AidlCallback> mAidlCallback;
 
-    void handler(int event, int msg, int delay);
+    void scheduleReinitialize(int delayMs);
     
     friend class SecureElementReader;
 };
