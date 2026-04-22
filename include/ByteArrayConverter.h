@@ -1,6 +1,7 @@
 #pragma once
 
-#include <iostream>
+#include <cstdint>
+#include <string>
+#include <vector>
 
-std::string hex2string (std::vector<uint8_t> hex);
-std::vector<uint8_t> hexStringToBytes(const std::string& hex);
+std::string hex2string(const std::vector<uint8_t>& hex);

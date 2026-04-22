@@ -1,7 +1,5 @@
 cc_binary {
-    name: "android.se.omapi.fake",
-
-    relative_install_path: "hw",
+    name: "se_omapi",
     srcs: [
         "main.cpp",
         "Channel.cpp",
@@ -11,11 +9,6 @@ cc_binary {
         "Terminal.cpp",
         "internal/ByteArrayConverter.cpp",
     ],
-    // This hex value is fetched from /vendor/etc/hal_uuid_map.xml
-    cflags: select(soong_config_variable("omapi", "uuid"), {
-        any @ uuid: ["-DCUSTOM_UUID_HEXSTRING=\"" + uuid + "\""],
-        default: [],
-    }),
     local_include_dirs: ["include"],
     shared_libs: [
         "libbase",
@@ -24,9 +17,5 @@ cc_binary {
         "android.hardware.secure_element-V1-ndk",
         "android.se.omapi-V1-ndk",
     ],
-    vendor: true,
-    // recovery: true,
-
-    init_rc: ["android.se.omapi.rc"],
-    vintf_fragments: ["android.se.omapi.xml"],
+    recovery_available: true,
 }

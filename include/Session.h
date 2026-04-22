@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ByteArrayConverter.h"
+#include <atomic>
 
 #include <aidl/android/se/omapi/BnSecureElementSession.h>
 #include <aidl/android/se/omapi/ISecureElementChannel.h>
@@ -25,8 +25,8 @@ using aidl::android::se::Channel;
 
 class SecureElementSession : public BnSecureElementSession {
     public:
-        SecureElementSession(SecureElementReader* reader);
-        virtual ~SecureElementSession() = default;
+        SecureElementSession(std::shared_ptr<SecureElementReader> reader);
+        virtual ~SecureElementSession();
 
         ::ndk::ScopedAStatus removeChannel(Channel* channel);
 
@@ -41,19 +41,10 @@ class SecureElementSession : public BnSecureElementSession {
                                                 const std::shared_ptr<ISecureElementListener>& listener, std::shared_ptr<ISecureElementChannel>* outChannel);
 
     private:
-        std::shared_ptr<SecureElementReader> mReader;
-        std::vector<Channel*> mChannels;
+        std::weak_ptr<SecureElementReader> mReader;
+        std::vector<std::shared_ptr<Channel>> mChannels;
         std::mutex mLock;
-        bool mIsClosed;
+        std::atomic<bool> mIsClosed{false};
         std::vector<uint8_t> mAtr;
-        std::vector<uint8_t> mUuid;
-
-        std::vector<std::string> UUIDs = {
-            "636F6D2E6E78702E7365637572697479", // NXP
-            "534552454144595f48414c5f55554944", // STM
-#ifdef CUSTOM_UUID_HEXSTRING
-            CUSTOM_UUID_HEXSTRING,
-#endif
-        };
 };
 }  // namespace aidl::android::se::omapi
